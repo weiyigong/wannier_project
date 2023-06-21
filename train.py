@@ -1,62 +1,83 @@
 import argparse
 import random
 import shutil
+import sys
 import time
 
-import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import torch.nn.functional as F
 import wandb
-from torch.cuda.amp import GradScaler
 
 from wann.data import CrystalGraphPreprocessedDataset, get_train_val_dataloader
-from wann.model import Model
 from wann.nn import ALIGNNPyG
+
+parser = argparse.ArgumentParser()
+
+add = parser.add_argument
+
+add('--d_model', type=int, default=64,
+    help='embedding dimensions (default: 64)')
+add('--h_dim', type=int, default=256,
+    help='hidden dimensions (default: 256)')
+add('--line_graph_layers', type=int, default=4,
+    help='number of line graph convolution layers (default: 4)')
+add('--graph_layers', type=int, default=4,
+    help='number of graph convolution layers (default: 4)')
+
+add('--num_workers', type=int, default=10,
+    help='number of workers (default: 10)')
+add('--drop_last', type=bool, default=False,
+    help='whether to drop the last batch or not (default: False)')
+add('--pin_memory', type=bool, default=True,
+    help='pin memory (default: True)')
+add('--batch_size', '-bs', type=int, default=16,
+    help='batch size (default: 16)')
+add('--dataset_ratio', '-dr', type=float, default=1,
+    help='percentage of dataset to use for training and testing (default: 1)')
+add('--train_ratio', type=float, default=0.8,
+    help='train ratio (default: 0.8)')
+add('--start_epoch', type=int, default=1,
+    help='epoch start number (default: 1)')
+add('--epochs', '-e', type=int, default=50,
+    help='number of epochs (default: 50)')
+
+add('--use_lr_scheduler', action='store_true',
+    help='whether to use learning rate scheduler or not (default: False)')
+add('--weight_init', action='store_true',
+    help='whether to use weight initilization or not (default: False)')
+add('--warmup_ratio', '-wr', type=float, default=0.2,
+    help='warmup ratio, use when --use_lr_schduler is true (default: 0.2)')
+
+add('--optim', type=str, default='adamw',
+    help='optimizer to use, adam or adamw (default: adamw)')
+add('--learning_rate', '-lr', type=float, default=1e-3,
+    help='learning rate (default: 1e-3)')
+add('--weight_decay', '-wd', type=float, default=0.0,
+    help='weight decay (default: 0.0)')
+
+add('--gpu_idx', type=int, default=0,
+    help='which gpu to use (default: 0)')
+add('--seed', type=int, default=0,
+    help='random seed (default: 0)')
+add('--deterministic', action='store_true',
+    help='whether to generate random state deterministically. Best for reproducing runs (default: False)')
+add('--resume_from', type=str, default=None,
+    help='path to checkpoint file to resume (default: None)')
+add('--log_wandb', action='store_true',
+    help='whether to use wandb to log training resuls (default: False)')
+add('--no_cuda', action='store_true',
+    help='whether to use cpu or not (default: False)')
+add('--print_freq', type=int, default=1,
+    help='print frequency (default: 1')
+
+args = parser.parse_args(sys.argv[1:])
 
 
 def main():
-
     best_loss = 1e6
     best_mae = 1e6
-
-    parser = argparse.ArgumentParser()
-    torch.cuda.empty_cache()
-
-    add = parser.add_argument
-
-    add('--d_model', type=int, default=16)
-    add('--h_dim', type=int, default=32)
-    add('--num_layers', type=int, default=1)
-    add('--conv_type', type=str, default='cgcnn')
-    add('--n_heads', type=int, default=None)
-
-    add('--num_workers', type=int, default=20)
-    add('--drop_last', type=bool, default=False)
-    add('--pin_memory', type=bool, default=True)
-    add('--batch_size', '-bs', type=int, default=8)
-    add('--dataset_ratio', '-dr', type=float, default=1)
-    add('--train_ratio', type=float, default=0.8)
-    add('--start_epoch', type=int, default=1)
-    add('--epochs', '-e', type=int, default=200)
-
-    add('--use_lr_scheduler', action='store_true')
-    add('--weight_init', action='store_true')
-    add('--warmup_ratio', '-wr', type=float, default=0.2)
-
-    add('--optim', type=str, default='adamw')
-    add('--learning_rate', '-lr', type=float, default=1e-3)
-    add('--weight_decay', '-wd', type=float, default=0.0)
-
-    add('--gpu_idx', type=int, default=0)
-    add('--seed', type=int, default=0)
-    add('--deterministic', type=bool, default=True)
-    add('--resume', type=str, default=True)
-    add('--log_wandb', action='store_true')
-    add('--group', type=str, default=True)
-    add('--no_cuda', action='store_true')
-
-    args = parser.parse_args()
+    global args
 
     if args.deterministic:
         random.seed(args.seed)
@@ -71,25 +92,14 @@ def main():
     torch.autograd.set_detect_anomaly(True)
 
     dataset = CrystalGraphPreprocessedDataset('dataset/MoS2_96/processed_dataset')
-    # data0 = dataset[0]
-
-    # model = Model(
-    #     node_dim=data0.x.size(-1),
-    #     edge_dim=data0.edge_attr.size(-1),
-    #     d_model=args.d_model,
-    #     h_dim=args.h_dim,
-    #     num_layers=args.num_layers,
-    #     conv_type=args.conv_type,
-    #     n_heads=args.n_heads
-    # )
     model = ALIGNNPyG(
-        alignn_layers=4,
-        gcn_layers=4,
+        alignn_layers=args.line_graph_layers,
+        gcn_layers=args.graph_layers,
         atom_input_features=92,
         edge_input_features=80,
         triplet_input_features=40,
-        embedding_features=64,
-        hidden_features=256,
+        embedding_features=args.d_model,
+        hidden_features=args.h_dim,
         output_features=64
     )
 
@@ -110,11 +120,11 @@ def main():
     elif args.optim.lower() == 'adamw':
         optimizer = torch.optim.AdamW(model.parameters(), lr=args.learning_rate, eps=1e-9, weight_decay=args.weight_decay)
     else:
-        raise ValueError('Optimizer must be SGD, Adam or AdamW.')
+        raise ValueError('Optimizer must be Adam or AdamW.')
 
-    if args.resume:
-        print("=> loading checkpoint")
-        checkpoint = torch.load('checkpoints/model_best_114q0gb0.pth.tar')
+    if args.resume_from is not None:
+        print("=> loading checkpoint from {}".format(args.resume_from))
+        checkpoint = torch.load(args.resume_from)
         args.start_epoch = checkpoint['epoch'] + 1
         args.best_loss = checkpoint['best_loss']
         args.best_mae = checkpoint['best_mae']
@@ -138,7 +148,7 @@ def main():
     rid = wandb.run.id if args.log_wandb else None
 
     for epoch in range(args.start_epoch, args.epochs + 1):
-        # train(model, train_loader, device, optimizer, epoch, args.log_wandb, scheduler)
+        train(model, train_loader, device, optimizer, epoch, args.log_wandb, scheduler)
         val_loss, val_mae = evaluate(model, val_loader, device, epoch, args.log_wandb)
 
         is_best = val_loss < best_loss
@@ -230,7 +240,7 @@ def train(model, train_loader, device, optimizer, epoch, log_wandb, scheduler=No
                        # 'lr-scheduler': scheduler.get_last_lr()[0]
                        })
         else:
-            if i % 10 == 0:
+            if i % args.print_freq == 0:
                 progress.display(i)
 
 
@@ -274,7 +284,7 @@ def evaluate(model, val_loader, device, epoch, log_wandb):
                            'val_mae': maes.avg,
                            'epoch': epoch})
             else:
-                if i % 10 == 0:
+                if i % args.print_freq == 0:
                     progress.display(i)
 
     return losses.avg, maes.avg

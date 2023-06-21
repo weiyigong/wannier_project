@@ -1,25 +1,19 @@
-import csv
 import functools
-import json, gzip
-import torch, os
-import zlib
-from pathlib import Path
+import json
 import os.path as osp
-
 from itertools import product
+from multiprocessing import Pool
+from pathlib import Path
 
 import numpy as np
+import os
+import torch
 from numpy.linalg import norm
 from pymatgen.core.structure import Structure
-from pymatgen.symmetry.analyzer import SpacegroupAnalyzer
-import torch.nn.functional as F
 from torch.utils.data import Dataset
+from torch.utils.data.dataset import random_split
 from torch_geometric.data import Data
-from torch_geometric.loader import DataLoader as GraphDataLoader
-import matplotlib.pyplot as plt
-from torch.utils.data.dataset import random_split, Subset
-
-from multiprocessing import Pool
+from torch_geometric.loader import DataLoader
 from tqdm import tqdm
 
 PATH = Path(__file__).parent
@@ -117,95 +111,95 @@ class AtomCustomJSONInitializer(AtomInitializer):
             self._embedding[key] = np.array(value, dtype=float)
 
 
-class CrystalGraphOrbDataset(Dataset):
-    def __init__(self, dataset_dir, dataset_ratio=1.0, radius=8.0, n_nbr=12):
-        super().__init__()
-
-        self.radius = radius
-        self.n_nbr = n_nbr
-
-        self.struc_dir = osp.join(dataset_dir, 'structures')
-        self.ham_dir = osp.join(dataset_dir, 'hamiltonians')
-        self.ids = os.listdir(self.struc_dir)
-
-        self.ids = self.ids[:int(len(self.ids) * dataset_ratio)]
-        self.ari = AtomCustomJSONInitializer(PATH / 'atom_init.json')
-        self.gdf = GaussianDistance(dmin=0.0, dmax=8.0, step=0.2)
-
-    def __len__(self):
-        return len(self.ids)
-
-    @functools.lru_cache(maxsize=None)
-    def __getitem__(self, index):
-        file = osp.join(self.struc_dir, self.ids[index])
-
-        fid = self.ids[index].split('_')[1]
-
-        with open(file, 'r') as f:
-            cont = f.read()
-        struc = Structure.from_str(cont, fmt='poscar')
-
-        h_file = osp.join(self.ham_dir, 'hamiltonians_{}'.format(fid))
-
-        d = {}
-        with open(h_file, 'r') as f:
-            for line in f:
-                ax, ay, az, i, j, t, _ = line.split()
-                key = tuple((ax, ay, az, i, j))
-                d[key] = float(t)
-
-        x, y, y_mask = [], [], []
-        edge_index, edge_attr = [], []
-
-        all_nbrs = struc.get_all_neighbors(self.radius)
-
-        for i, (s, nbrs) in enumerate(zip(struc, all_nbrs)):
-            nbrs = sorted(nbrs, key=lambda y: y.nn_distance)[:self.n_nbr]
-
-            x_ele = self.ari.get_atom_fea(s.specie.number)
-            if s.specie.name == 'Mo':
-                x_orb = np.eye(5)
-                x.append(np.hstack([np.tile(x_ele, (5, 1)), x_orb]))
-            else:
-                x_orb = np.eye(5)[:3]
-                x.append(np.hstack([np.tile(x_ele, (3, 1)), x_orb]))
-
-            ctr_idx = get_orb_idx(i)
-            for nbr in nbrs[:self.n_nbr]:
-                nbr_idx = get_orb_idx(nbr.index)
-                eis = list(product(ctr_idx, nbr_idx))
-                edge_index.extend(eis)
-
-                for ei in eis:
-                    key = tuple(int(i) for i in nbr.image) + ei
-                    key = tuple(str(i) for i in key)
-                    # if key in d and abs(d[key]) > 0.1:
-                    if key in d:
-                        y.append(d[key])
-                        y_mask.append(True)
-                    else:
-                        y.append(0.0)
-                        y_mask.append(False)
-
-                edge_attr.extend([nbr.nn_distance] * len(eis))
-
-        x = np.vstack(x)
-        y = np.array(y)
-        edge_index = np.array(edge_index)
-        edge_attr = np.array(edge_attr)
-
-        y = y[y_mask]
-        edge_index = edge_index[y_mask]
-        edge_attr = edge_attr[y_mask]
-
-        edge_attr = self.gdf.expand(edge_attr)
-
-        x = torch.tensor(x, dtype=torch.float)
-        y = torch.tensor(y, dtype=torch.float)
-        edge_index = torch.tensor(edge_index.transpose(), dtype=torch.long)
-        edge_attr = torch.tensor(edge_attr, dtype=torch.float)
-
-        return Data.from_dict({'x': x, 'edge_index': edge_index, 'edge_attr': edge_attr, 'y': y}), fid
+# class CrystalGraphOrbDataset(Dataset):
+#     def __init__(self, dataset_dir, dataset_ratio=1.0, radius=8.0, n_nbr=12):
+#         super().__init__()
+#
+#         self.radius = radius
+#         self.n_nbr = n_nbr
+#
+#         self.struc_dir = osp.join(dataset_dir, 'structures')
+#         self.ham_dir = osp.join(dataset_dir, 'hamiltonians')
+#         self.ids = os.listdir(self.struc_dir)
+#
+#         self.ids = self.ids[:int(len(self.ids) * dataset_ratio)]
+#         self.ari = AtomCustomJSONInitializer(PATH / 'atom_init.json')
+#         self.gdf = GaussianDistance(dmin=0.0, dmax=radius, step=0.2)
+#
+#     def __len__(self):
+#         return len(self.ids)
+#
+#     @functools.lru_cache(maxsize=None)
+#     def __getitem__(self, index):
+#         file = osp.join(self.struc_dir, self.ids[index])
+#
+#         fid = self.ids[index].split('_')[1]
+#
+#         with open(file, 'r') as f:
+#             cont = f.read()
+#         struc = Structure.from_str(cont, fmt='poscar')
+#
+#         h_file = osp.join(self.ham_dir, 'hamiltonians_{}'.format(fid))
+#
+#         d = {}
+#         with open(h_file, 'r') as f:
+#             for line in f:
+#                 ax, ay, az, i, j, t, _ = line.split()
+#                 key = tuple((ax, ay, az, i, j))
+#                 d[key] = float(t)
+#
+#         x, y, y_mask = [], [], []
+#         edge_index, edge_attr = [], []
+#
+#         all_nbrs = struc.get_all_neighbors(self.radius)
+#
+#         for i, (s, nbrs) in enumerate(zip(struc, all_nbrs)):
+#             nbrs = sorted(nbrs, key=lambda y: y.nn_distance)[:self.n_nbr]
+#
+#             x_ele = self.ari.get_atom_fea(s.specie.number)
+#             if s.specie.name == 'Mo':
+#                 x_orb = np.eye(5)
+#                 x.append(np.hstack([np.tile(x_ele, (5, 1)), x_orb]))
+#             else:
+#                 x_orb = np.eye(5)[:3]
+#                 x.append(np.hstack([np.tile(x_ele, (3, 1)), x_orb]))
+#
+#             ctr_idx = get_orb_idx(i)
+#             for nbr in nbrs[:self.n_nbr]:
+#                 nbr_idx = get_orb_idx(nbr.index)
+#                 eis = list(product(ctr_idx, nbr_idx))
+#                 edge_index.extend(eis)
+#
+#                 for ei in eis:
+#                     key = tuple(int(i) for i in nbr.image) + ei
+#                     key = tuple(str(i) for i in key)
+#                     # if key in d and abs(d[key]) > 0.1:
+#                     if key in d:
+#                         y.append(d[key])
+#                         y_mask.append(True)
+#                     else:
+#                         y.append(0.0)
+#                         y_mask.append(False)
+#
+#                 edge_attr.extend([nbr.nn_distance] * len(eis))
+#
+#         x = np.vstack(x)
+#         y = np.array(y)
+#         edge_index = np.array(edge_index)
+#         edge_attr = np.array(edge_attr)
+#
+#         y = y[y_mask]
+#         edge_index = edge_index[y_mask]
+#         edge_attr = edge_attr[y_mask]
+#
+#         edge_attr = self.gdf.expand(edge_attr)
+#
+#         x = torch.tensor(x, dtype=torch.float)
+#         y = torch.tensor(y, dtype=torch.float)
+#         edge_index = torch.tensor(edge_index.transpose(), dtype=torch.long)
+#         edge_attr = torch.tensor(edge_attr, dtype=torch.float)
+#
+#         return Data.from_dict({'x': x, 'edge_index': edge_index, 'edge_attr': edge_attr, 'y': y}), fid
 
 
 class CrystalGraphDataset(Dataset):
@@ -307,10 +301,6 @@ class CrystalGraphDataset(Dataset):
         return edge_index, edge_attr, lg_edge_index, lg_edge_attr, target, target_mask
 
 
-class LineGraphData(Data):
-    ...
-
-
 class CrystalGraphPreprocessedDataset(Dataset):
     def __init__(self, dataset_dir, dataset_ratio=1.0):
         super().__init__()
@@ -338,7 +328,9 @@ def get_orb_idx(i):
         return list(range(160 + (i - 32) * 3, 160 + (i - 32) * 3 + 3))
 
 
-IMAGE_IDX = {(-1, -1, 0): 0, (-1, 0, 0): 1, (0, -1, 0): 2, (0, 0, 0): 3, (0, 1, 0): 4, (1, 0, 0): 5, (1, 1, 0): 6}
+IMAGE_IDX = {(-2, -2, 0): 0, (-2, -1, 0): 1, (-2, 0, 0): 2, (-1, -2, 0): 3, (-1, -1, 0): 4, (-1, 0, 0): 5,
+             (-1, 1, 0): 6, (0, -2, 0): 7, (0, -1, 0): 8, (0, 0, 0): 9, (0, 1, 0): 10, (0, 2, 0): 11, (1, -1, 0): 12,
+             (1, 0, 0): 13, (1, 1, 0): 14, (1, 2, 0): 15, (2, 0, 0): 16, (2, 1, 0): 17, (2, 2, 0): 18}
 
 
 def get_orb_rows(ctr_idx, nbr_idx, image):
@@ -370,38 +362,44 @@ def get_train_val_dataloader(dataset, batch_size, train_ratio, seed, num_workers
                              **kwargs):
     n_data = len(dataset)
     train_split = int(n_data * train_ratio)
-    # dataset_train, dataset_val = random_split(
-    #     dataset,
-    #     [train_split, len(dataset) - train_split],
-    #     generator=torch.Generator().manual_seed(seed)
-    # )
+    dataset_train, dataset_val = random_split(
+        dataset,
+        [train_split, len(dataset) - train_split],
+        generator=torch.Generator().manual_seed(seed)
+    )
 
-    indices = list(range(n_data))
-    dataset_train = Subset(dataset, indices[:train_split])
-    dataset_val = Subset(dataset, indices[train_split:])
-
-    train_kw = {'batch_size': batch_size, 'num_workers': num_workers, 'drop_last': drop_last, 'pin_memory': pin_memory,
-                'shuffle': True}
-    val_kw = {'batch_size': batch_size, 'num_workers': num_workers, 'drop_last': drop_last, 'pin_memory': pin_memory}
-
-    train_loader = GraphDataLoader(dataset_train, **train_kw, **kwargs)
-    val_loader = GraphDataLoader(dataset_val, **val_kw, **kwargs)
+    train_loader = DataLoader(
+        dataset_train,
+        batch_size=batch_size,
+        num_workers=num_workers,
+        drop_last=drop_last,
+        pin_memory=pin_memory,
+        shuffle=True,
+        **kwargs
+    )
+    val_loader = DataLoader(
+        dataset_val,
+        batch_size=batch_size,
+        num_workers=num_workers,
+        drop_last=drop_last,
+        pin_memory=pin_memory,
+        **kwargs
+    )
     return train_loader, val_loader
 
 
 if __name__ == '__main__':
-    didx = '96'
-    dataset = CrystalGraphDataset('../dataset/MoS2_{}'.format(didx))
-    # d = dataset[0]
+    dataset = CrystalGraphDataset('../dataset/MoS2_96')
 
     N = None
 
     def process_data(idx):
         d, fid = dataset[idx]
-        torch.save(d, '../dataset/MoS2_{}/processed_dataset/{}.pt'.format(didx, fid))
+        torch.save(d, '../dataset/MoS2_96/processed_dataset/{}.pt'.format(fid))
 
     if N is None:
         N = len(dataset)
+
     pool = Pool(processes=20)
 
     for _ in tqdm(pool.imap_unordered(process_data, range(N)), total=N):
