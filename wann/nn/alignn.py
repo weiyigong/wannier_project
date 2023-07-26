@@ -1,4 +1,5 @@
 from typing import Optional
+from pathlib import Path
 
 import numpy as np
 import torch
@@ -6,6 +7,8 @@ from torch import nn
 from torch.nn import functional as F
 from torch_geometric.nn.conv import MessagePassing
 from torch_scatter import scatter
+
+RESOURCE_PATH = Path(__file__).parent.parent.parent / 'resources'
 
 
 class RBFExpansion(nn.Module):
@@ -118,20 +121,26 @@ class ALIGNNConvPyG(nn.Module):
 
 
 class ALIGNNPyG(nn.Module):
-    def __init__(self, atom_input_features, edge_input_features, triplet_input_features,
+    def __init__(self, atom_fea_dim, bond_len_fea_dim, bond_cos_fea_dim, angle_fea_dim,
                  embedding_features, hidden_features, alignn_layers, gcn_layers, output_features):
         super().__init__()
 
-        self.atom_embedding = MLPLayer(atom_input_features, hidden_features)
+        self.atom_embedding = nn.Sequential(
+            nn.Embedding.from_pretrained(torch.load(RESOURCE_PATH / 'atom_init.pt'), freeze=True),
+            MLPLayer(atom_fea_dim, hidden_features)
+        )
 
-        self.edge_embedding = nn.Sequential(
-            RBFExpansion(vmin=0, vmax=8.0, bins=edge_input_features, ),
-            MLPLayer(edge_input_features, embedding_features),
+        self.bond_len_embedding = RBFExpansion(0, 8, bond_len_fea_dim)
+        self.bond_cos_embedding = RBFExpansion(0, 1, bond_cos_fea_dim)
+
+        self.bond_embedding = nn.Sequential(
+            MLPLayer(bond_len_fea_dim + 3 * bond_cos_fea_dim, embedding_features),
             MLPLayer(embedding_features, hidden_features),
         )
+
         self.angle_embedding = nn.Sequential(
-            RBFExpansion(vmin=-1, vmax=1.0, bins=triplet_input_features),
-            MLPLayer(triplet_input_features, embedding_features),
+            RBFExpansion(-1, 1, angle_fea_dim),
+            MLPLayer(angle_fea_dim, embedding_features),
             MLPLayer(embedding_features, hidden_features),
         )
 
@@ -146,7 +155,7 @@ class ALIGNNPyG(nn.Module):
 
     def forward(self, data):
         x = self.atom_embedding(data.x)
-        y = self.edge_embedding(data.edge_attr)
+        y = self.edge_embed(data.edge_attr)
         z = self.angle_embedding(data.lg_edge_attr)
         g = data.edge_index
         lg = data.lg_edge_index_batch
@@ -162,24 +171,10 @@ class ALIGNNPyG(nn.Module):
         y = self.output_head(y)
         return y
 
+    def edge_embed(self, edge_attr):
+        bond_len = edge_attr[..., 0]
+        bond_cos = edge_attr[..., 1:]
 
-if __name__ == '__main__':
-    from wann.data import CrystalGraphPreprocessedDataset, get_train_val_dataloader
-
-    dataset = CrystalGraphPreprocessedDataset('../../dataset/MoS2_96/processed_dataset')
-    train_loader, val_loader = get_train_val_dataloader(dataset, batch_size=2, train_ratio=0.8, seed=0, num_workers=16,
-                                                        drop_last=False, pin_memory=True)
-    data = next(iter(train_loader))
-
-    model = ALIGNNPyG(
-        alignn_layers=4,
-        gcn_layers=4,
-        atom_input_features=92,
-        edge_input_features=80,
-        triplet_input_features=40,
-        embedding_features=64,
-        hidden_features=256,
-        output_features=64
-    )
-
-    pred = model(data)
+        bond_len = self.bond_len_embedding(bond_len)
+        bond_cos = self.bond_cos_embedding(bond_cos.flatten()).reshape(bond_cos.size(0), -1)
+        return self.bond_embedding(torch.cat([bond_len, bond_cos], dim=-1))

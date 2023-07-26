@@ -53,7 +53,7 @@ class GraphEncoder(nn.Module):
         return x
 
 
-class Model(nn.Module):
+class GAT(nn.Module):
     def __init__(self, node_dim, edge_dim, d_model, h_dim, num_layers, conv_type, n_heads=None):
         super().__init__()
         self.embed_node = nn.Linear(node_dim, d_model)

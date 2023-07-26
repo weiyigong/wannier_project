@@ -1,0 +1,44 @@
+model:
+  atom_fea_dim: 92
+  bond_len_fea_dim: 80
+  bond_cos_fea_dim: 10
+  angle_fea_dim: 40
+  embedding_features: 64
+  hidden_features: 256
+  alignn_layers: 1
+  gcn_layers: 1
+  output_features: 64
+
+
+training:
+  num_workers: 10
+  drop_last: false
+  pin_memory: true
+  batch_size: 16
+  dataset_ratio: 1.0
+  train_ratio: 0.8
+  start_epoch: 1
+  epochs: 50
+  use_lr_scheduler: false
+  weight_init: false
+  warmup_ratio: 0.2
+
+optim:
+  optim_type: 'AdamW' # SGD, Adam, AdamW
+  momentum: null
+  learning_rate: 1.0e-3
+  weight_decay: 0.0
+
+environment:
+  no_cuda: false
+  gpu_idx: 0 # 0, 1
+  seed: 0
+  deterministic: false
+
+resume:
+  resume_from: null
+
+logging:
+  log_wandb: false
+  group: null
+  print_freq: 10
