@@ -131,7 +131,7 @@ class ALIGNNPyG(nn.Module):
         )
 
         self.bond_len_embedding = RBFExpansion(0, 8, bond_len_fea_dim)
-        self.bond_cos_embedding = RBFExpansion(0, 1, bond_cos_fea_dim)
+        self.bond_cos_embedding = RBFExpansion(-1, 1, bond_cos_fea_dim)
 
         self.bond_embedding = nn.Sequential(
             MLPLayer(bond_len_fea_dim + 3 * bond_cos_fea_dim, embedding_features),
